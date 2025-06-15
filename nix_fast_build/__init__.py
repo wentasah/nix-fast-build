@@ -581,18 +581,22 @@ class Build:
 
     async def build(
         self, stack: AsyncExitStack, build_output: IO[str], opts: Options
-    ) -> int:
+    ) -> tuple[int, bytes]:
         proc = await stack.enter_async_context(
-            nix_build(self.attr, self.drv_path, build_output, opts)
+            nix_build(self.attr, self.drv_path, opts)
         )
+        log = b""
+        async for line in proc.stdout:
+            log += line
+            build_output.write(line)
         rc = 0
         for _ in range(opts.retries + 1):
             rc = await proc.wait()
             if rc == 0:
                 logger.debug(f"build {self.attr} succeeded")
-                return rc
+                return rc, log
             logger.warning(f"build {self.attr} exited with {rc}")
-        return rc
+        return rc, log
 
     async def nix_copy(
         self, args: list[str], exit_stack: AsyncExitStack, opts: Options
@@ -701,7 +705,7 @@ class QueueWithContext(Queue[T]):
 
 @asynccontextmanager
 async def nix_build(
-    attr: str, installable: str, stderr: IO[Any] | None, opts: Options
+    attr: str, installable: str, opts: Options
 ) -> AsyncIterator[Process]:
     args = ["nix-build", installable, "--keep-going", *opts.options]
     if opts.no_link:
@@ -714,7 +718,9 @@ async def nix_build(
 
     args = maybe_remote(args, opts)
     logger.debug("run %s", shlex.join(args))
-    proc = await asyncio.create_subprocess_exec(*args, stderr=stderr)
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+    )
     try:
         yield proc
     finally:
@@ -811,15 +817,18 @@ async def run_builds(
             drv_paths.add(job.drv_path)
             build = Build(job.attr, job.drv_path, job.outputs)
             start_time = timeit.default_timer()
-            rc = await build.build(stack, build_output, opts)
+            rc, log = await build.build(stack, build_output, opts)
             results.append(
                 Result(
                     result_type=ResultType.BUILD,
                     attr=job.attr,
                     success=rc == 0,
                     duration=timeit.default_timer() - start_time,
-                    # TODO: add log output here
-                    error=f"build exited with {rc}" if rc != 0 else None,
+                    error = (
+                        f"build exited with {rc}\n{log.decode()}"
+                        if rc != 0
+                        else log.decode()
+                    )
                 )
             )
             if rc != 0:
