@@ -719,7 +719,8 @@ async def nix_build(
     args = maybe_remote(args, opts)
     logger.debug("run %s", shlex.join(args))
     proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        limit = 1024 * 256,     # allow handling lines longer than 64 KiB
     )
     try:
         yield proc
